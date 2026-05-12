@@ -1,0 +1,470 @@
+// ============================================================
+//  SMART HOSTEL ROOM ALLOCATION — app.js
+//  0/1 Knapsack DP (exact port of C algorithm)
+// ============================================================
+
+// ── State ──────────────────────────────────────────────────
+let students = [];   // { id, name, gender, year, distanceKm, cgpa, hasMedical, hasFinancial, weight, priorityScore }
+let nextId   = 1;
+let lastDP   = { male: null, female: null };
+let animTimer = null;
+
+// ── Professional Scoring (max 100 pts) ────────────────────
+function computePriority(s) {
+  let score = 0;
+
+  // 1. Distance from Home (max 40 pts)
+  if      (s.distanceKm >= 200) score += 40;
+  else if (s.distanceKm >= 150) score += 35;
+  else if (s.distanceKm >= 100) score += 30;
+  else if (s.distanceKm >= 50)  score += 20;
+  else                           score += 10;
+
+  // 2. Academic Year (max 20 pts — 1st years highest priority)
+  if      (s.year === 1) score += 20;
+  else if (s.year === 2) score += 15;
+  else if (s.year === 3) score += 10;
+  else                    score +=  5;
+
+  // 3. Medical / Disability (max 20 pts)
+  if (s.hasMedical) score += 20;
+
+  // 4. Financial Need — EWS/BPL/Scholarship (max 15 pts)
+  if (s.hasFinancial) score += 15;
+
+  // 5. Academic Merit — CGPA (max 5 pts)
+  if      (s.cgpa >= 8.5) score += 5;
+  else if (s.cgpa >= 7.0)  score += 3;
+  else                      score += 1;
+
+  return score;
+}
+
+function scoreBreakdown(s) {
+  let dist = 0;
+  if      (s.distanceKm >= 200) dist = 40;
+  else if (s.distanceKm >= 150) dist = 35;
+  else if (s.distanceKm >= 100) dist = 30;
+  else if (s.distanceKm >= 50)  dist = 20;
+  else                           dist = 10;
+
+  const yr  = s.year === 1 ? 20 : s.year === 2 ? 15 : s.year === 3 ? 10 : 5;
+  const med = s.hasMedical   ? 20 : 0;
+  const fin = s.hasFinancial ? 15 : 0;
+  const cgpa = s.cgpa >= 8.5 ? 5 : s.cgpa >= 7.0 ? 3 : 1;
+  return { dist, yr, med, fin, cgpa };
+}
+
+// ── 0/1 Knapsack DP (exact C logic) ──────────────────────
+function knapsack(group, W) {
+  const n = group.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(W + 1).fill(0));
+
+  for (let i = 1; i <= n; i++) {
+    const wi = group[i - 1].weight;         // always 1
+    const vi = group[i - 1].priorityScore;
+
+    for (let w = 0; w <= W; w++) {
+      dp[i][w] = dp[i - 1][w];             // exclude
+      if (wi <= w) {
+        const inc = vi + dp[i - 1][w - wi];
+        if (inc > dp[i][w]) dp[i][w] = inc; // include
+      }
+    }
+  }
+  return dp;
+}
+
+// ── Backtrack ─────────────────────────────────────────────
+function backtrack(group, W, dp) {
+  const n = group.length;
+  let w = W;
+  const allocated = [];
+  const btCells   = [];
+
+  for (let i = n; i >= 1; i--) {
+    if (dp[i][w] !== dp[i - 1][w]) {
+      allocated.push(group[i - 1]);
+      btCells.push({ i, w });
+      w -= group[i - 1].weight;
+    }
+  }
+  return { allocated, btCells };
+}
+
+// ── INIT ──────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  // Slider listeners
+  ['male', 'female'].forEach(g => {
+    const sl  = document.getElementById(`cap-${g}`);
+    const out = document.getElementById(`cap-${g}-val`);
+    sl.addEventListener('input', () => { out.value = sl.value; });
+  });
+
+  // Toggle labels
+  document.getElementById('f-medical').addEventListener('change', e => {
+    document.getElementById('medical-label').textContent = e.target.checked ? 'Yes' : 'No';
+    updatePreview();
+  });
+  document.getElementById('f-financial').addEventListener('change', e => {
+    document.getElementById('financial-label').textContent = e.target.checked ? 'Yes' : 'No';
+    updatePreview();
+  });
+
+  // Live score preview
+  ['f-dist', 'f-year', 'f-cgpa'].forEach(id => {
+    document.getElementById(id).addEventListener('input', updatePreview);
+  });
+});
+
+// ── LIVE SCORE PREVIEW ────────────────────────────────────
+function updatePreview() {
+  const dist = parseFloat(document.getElementById('f-dist').value)  || 0;
+  const year = parseInt(document.getElementById('f-year').value)    || 0;
+  const cgpa = parseFloat(document.getElementById('f-cgpa').value)  || 0;
+  const med  = document.getElementById('f-medical').checked;
+  const fin  = document.getElementById('f-financial').checked;
+
+  if (!dist || !year || !cgpa) {
+    document.getElementById('sp-value').textContent    = '—';
+    document.getElementById('sp-breakdown').textContent = '';
+    return;
+  }
+
+  const temp = { distanceKm: dist, year, cgpa, hasMedical: med, hasFinancial: fin };
+  const bd   = scoreBreakdown(temp);
+  const total = bd.dist + bd.yr + bd.med + bd.fin + bd.cgpa;
+
+  document.getElementById('sp-value').textContent = total + ' / 100';
+  document.getElementById('sp-breakdown').textContent =
+    `Dist: +${bd.dist}  |  Year: +${bd.yr}  |  Medical: +${bd.med}  |  Financial: +${bd.fin}  |  CGPA: +${bd.cgpa}`;
+}
+
+// ── ADD STUDENT ───────────────────────────────────────────
+function addStudent(e) {
+  e.preventDefault();
+
+  const name   = document.getElementById('f-name').value.trim();
+  const gender = document.querySelector('input[name="gender"]:checked')?.value;
+  const year   = parseInt(document.getElementById('f-year').value);
+  const dist   = parseFloat(document.getElementById('f-dist').value);
+  const cgpa   = parseFloat(document.getElementById('f-cgpa').value);
+  const med    = document.getElementById('f-medical').checked;
+  const fin    = document.getElementById('f-financial').checked;
+
+  if (!name || !gender || !year || !dist || !cgpa) return;
+  if (cgpa < 0 || cgpa > 10) { alert('CGPA must be between 0 and 10.'); return; }
+
+  const s = {
+    id: nextId++, name, gender, year,
+    distanceKm: dist, cgpa, hasMedical: med, hasFinancial: fin,
+    weight: 1, priorityScore: 0
+  };
+  s.priorityScore = computePriority(s);
+  students.push(s);
+
+  clearForm();
+  renderAll();
+}
+
+// ── DELETE STUDENT ────────────────────────────────────────
+function deleteStudent(id) {
+  students = students.filter(s => s.id !== id);
+  renderAll();
+  // hide results if re-editing
+  document.getElementById('results-section').style.display = 'none';
+  document.getElementById('dp-section').style.display = 'none';
+}
+
+// ── CLEAR FORM ────────────────────────────────────────────
+function clearForm() {
+  document.getElementById('student-form').reset();
+  document.getElementById('medical-label').textContent   = 'No';
+  document.getElementById('financial-label').textContent = 'No';
+  document.getElementById('sp-value').textContent        = '—';
+  document.getElementById('sp-breakdown').textContent    = '';
+}
+
+// ── CLEAR ALL ─────────────────────────────────────────────
+function clearAll() {
+  if (!confirm('Remove all students?')) return;
+  students = [];
+  nextId   = 1;
+  renderAll();
+  document.getElementById('results-section').style.display = 'none';
+  document.getElementById('dp-section').style.display      = 'none';
+}
+
+// ── RENDER EVERYTHING ─────────────────────────────────────
+function renderAll(allocatedIds = new Set()) {
+  const males   = students.filter(s => s.gender === 'Male');
+  const females = students.filter(s => s.gender === 'Female');
+
+  // Hero stats
+  document.getElementById('stat-male').textContent   = males.length   + ' student' + (males.length   !== 1 ? 's' : '');
+  document.getElementById('stat-female').textContent = females.length + ' student' + (females.length !== 1 ? 's' : '');
+  document.getElementById('stat-total').textContent  = students.length;
+
+  // Count badge
+  document.getElementById('list-count-badge').textContent = students.length + ' student' + (students.length !== 1 ? 's' : '');
+  document.getElementById('btn-clear-all').style.display  = students.length ? 'inline-flex' : 'none';
+
+  // Empty state
+  document.getElementById('empty-state').style.display = students.length ? 'none' : 'block';
+
+  // Male section
+  const mSec = document.getElementById('male-section');
+  mSec.style.display = males.length ? 'block' : 'none';
+  renderGenderTable('male-tbody', males, allocatedIds);
+
+  // Female section
+  const fSec = document.getElementById('female-section');
+  fSec.style.display = females.length ? 'block' : 'none';
+  renderGenderTable('female-tbody', females, allocatedIds);
+
+  // Capacity section
+  const hasBoth = males.length > 0 || females.length > 0;
+  document.getElementById('capacity-section').style.display = hasBoth ? 'block' : 'none';
+
+  // Animate button
+  document.getElementById('btn-animate').style.display =
+    (lastDP.male || lastDP.female) ? 'inline-flex' : 'none';
+}
+
+function renderGenderTable(tbodyId, group, allocatedIds) {
+  const tbody = document.getElementById(tbodyId);
+  tbody.innerHTML = '';
+
+  group
+    .slice()
+    .sort((a, b) => b.priorityScore - a.priorityScore)
+    .forEach((s, idx) => {
+      const isA = allocatedIds.has(s.id);
+      const tr  = document.createElement('tr');
+      if (isA) tr.classList.add('allocated-row');
+
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td><strong>${s.name}</strong>${isA ? ' <span style="color:var(--green);font-size:.8rem">✓</span>' : ''}</td>
+        <td>Year ${s.year}</td>
+        <td>${s.distanceKm} km</td>
+        <td>${s.cgpa.toFixed(2)}</td>
+        <td><span class="${s.hasMedical  ? 'yes-tag' : 'no-tag'}">${s.hasMedical  ? 'Yes' : 'No'}</span></td>
+        <td><span class="${s.hasFinancial? 'yes-tag' : 'no-tag'}">${s.hasFinancial? 'Yes' : 'No'}</span></td>
+        <td><span class="score-tag">${s.priorityScore}</span></td>
+        <td><button class="del-btn" onclick="deleteStudent(${s.id})" title="Remove">✕</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+}
+
+// ── RUN ALLOCATION ────────────────────────────────────────
+function runAllocation() {
+  const males   = students.filter(s => s.gender === 'Male');
+  const females = students.filter(s => s.gender === 'Female');
+
+  if (!males.length && !females.length) {
+    alert('Please add at least one student first.');
+    return;
+  }
+
+  const Wm = parseInt(document.getElementById('cap-male').value);
+  const Wf = parseInt(document.getElementById('cap-female').value);
+
+  const maleDp   = knapsack(males,   Wm);
+  const femaleDp = knapsack(females, Wf);
+
+  lastDP.male   = { dp: maleDp,   group: males,   W: Wm };
+  lastDP.female = { dp: femaleDp, group: females, W: Wf };
+
+  const mResult = backtrack(males,   Wm, maleDp);
+  const fResult = backtrack(females, Wf, femaleDp);
+
+  const allocatedIds = new Set([
+    ...mResult.allocated.map(s => s.id),
+    ...fResult.allocated.map(s => s.id),
+  ]);
+
+  renderAll(allocatedIds);
+  renderDPTables(mResult.btCells, fResult.btCells);
+  renderResults(mResult, fResult, Wm, Wf);
+
+  document.getElementById('dp-section').style.display      = 'block';
+  document.getElementById('results-section').style.display = 'block';
+  document.getElementById('btn-animate').style.display     = 'inline-flex';
+
+  document.getElementById('results-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── BUILD DP TABLE HTML ───────────────────────────────────
+function buildDPHtml(group, W, dp, btCells, animSet = new Set()) {
+  if (!group.length) return '<p style="color:var(--txt3);padding:20px">No students in this group.</p>';
+
+  const n     = group.length;
+  const btSet = new Set(btCells.map(c => `${c.i}-${c.w}`));
+
+  let html = `<table class="dp-tbl"><thead><tr><th>i \\ w</th>`;
+  for (let w = 0; w <= W; w++) html += `<th>${w}</th>`;
+  html += `</tr></thead><tbody>`;
+
+  // Row 0 base
+  html += `<tr><td class="dp-row-lbl">0 (base)</td>`;
+  for (let w = 0; w <= W; w++) html += `<td class="dp-z" id="dp0-${w}">0</td>`;
+  html += `</tr>`;
+
+  for (let i = 1; i <= n; i++) {
+    html += `<tr><td class="dp-row-lbl">${i}. ${group[i-1].name}</td>`;
+    for (let w = 0; w <= W; w++) {
+      const key = `${i}-${w}`;
+      let cls = '';
+      if (btSet.has(key))    cls = 'dp-bt';
+      else if (animSet.has(key)) cls = 'dp-hi';
+      else if (dp[i][w] === 0)   cls = 'dp-z';
+      html += `<td class="${cls}" id="dp-${i}-${w}">${dp[i][w]}</td>`;
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+
+// ── RENDER DP TABLES ──────────────────────────────────────
+function renderDPTables(mBt, fBt) {
+  const { dp: mDp, group: mG, W: Wm } = lastDP.male;
+  const { dp: fDp, group: fG, W: Wf } = lastDP.female;
+
+  document.getElementById('dp-male-wrap').innerHTML   = buildDPHtml(mG, Wm, mDp, mBt);
+  document.getElementById('dp-female-wrap').innerHTML = buildDPHtml(fG, Wf, fDp, fBt);
+}
+
+// ── DP TABS ───────────────────────────────────────────────
+function showDPTab(gender) {
+  document.querySelectorAll('.dp-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.dp-panel').forEach(p => p.classList.remove('active-panel'));
+  document.getElementById(`tab-${gender}-dp`).classList.add('active');
+  document.getElementById(`dp-${gender}-wrap`).classList.add('active-panel');
+}
+
+// ── ANIMATE DP ────────────────────────────────────────────
+function animateDP() {
+  if (!lastDP.male && !lastDP.female) return;
+  if (animTimer) clearInterval(animTimer);
+
+  // Re-render blank (zeros only)
+  const mBt = backtrack(lastDP.male.group,   lastDP.male.W,   lastDP.male.dp).btCells;
+  const fBt = backtrack(lastDP.female.group, lastDP.female.W, lastDP.female.dp).btCells;
+
+  // Build HTML with blank cells
+  document.getElementById('dp-male-wrap').innerHTML   =
+    buildDPHtml(lastDP.male.group,   lastDP.male.W,   lastDP.male.dp,   [], new Set());
+  document.getElementById('dp-female-wrap').innerHTML =
+    buildDPHtml(lastDP.female.group, lastDP.female.W, lastDP.female.dp, [], new Set());
+
+  // Animate male tab first
+  showDPTab('male');
+
+  const { dp, group, W } = lastDP.male;
+  const n = group.length;
+  const cells = [];
+  for (let i = 1; i <= n; i++)
+    for (let w = 0; w <= W; w++)
+      cells.push({ i, w });
+
+  // Set all cells to 0 first
+  cells.forEach(({ i, w }) => {
+    const el = document.getElementById(`dp-${i}-${w}`);
+    if (el) { el.textContent = '0'; el.className = 'dp-z'; }
+  });
+
+  let idx = 0;
+  const mBtSet = new Set(mBt.map(c => `${c.i}-${c.w}`));
+
+  animTimer = setInterval(() => {
+    if (idx >= cells.length) {
+      clearInterval(animTimer);
+      // highlight backtrack
+      mBt.forEach(({ i, w }) => {
+        const el = document.getElementById(`dp-${i}-${w}`);
+        if (el) el.className = 'dp-bt';
+      });
+      return;
+    }
+
+    const { i, w } = cells[idx];
+    const el = document.getElementById(`dp-${i}-${w}`);
+    if (el) {
+      el.textContent = dp[i][w];
+      const key = `${i}-${w}`;
+      if (mBtSet.has(key))              el.className = 'dp-bt';
+      else if (dp[i][w] > dp[i-1][w])  el.className = 'dp-hi';
+      else if (dp[i][w] === 0)          el.className = 'dp-z';
+      else                              el.className = '';
+    }
+    idx++;
+  }, 70);
+}
+
+// ── RENDER RESULTS ────────────────────────────────────────
+function renderResults(mResult, fResult, Wm, Wf) {
+  renderGenderResult('male',   mResult, Wm);
+  renderGenderResult('female', fResult, Wf);
+}
+
+function renderGenderResult(gender, result, W) {
+  const { allocated } = result;
+  const cardClass = gender + '-card';
+  const totalScore = allocated.reduce((s, x) => s + x.priorityScore, 0);
+  const totalWeight = allocated.reduce((s, x) => s + x.weight, 0);
+
+  document.getElementById(`${gender}-rooms-used`).textContent  = `${totalWeight} / ${W}`;
+  document.getElementById(`${gender}-total-score`).textContent = totalScore;
+
+  const grid = document.getElementById(`${gender}-cards`);
+  grid.innerHTML = '';
+
+  allocated.forEach((s, idx) => {
+    const bd  = scoreBreakdown(s);
+    const div = document.createElement('div');
+    div.className = `r-card ${cardClass}`;
+    div.style.animationDelay = `${idx * 0.08}s`;
+    div.innerHTML = `
+      <div class="r-rank">Rank ${idx + 1} · Allocated ✓</div>
+      <div class="r-name">${s.name}</div>
+      <div class="r-tags">
+        <span class="r-tag t-dist">📍 ${s.distanceKm} km (+${bd.dist})</span>
+        <span class="r-tag t-yr">📚 Year ${s.year} (+${bd.yr})</span>
+        ${bd.med > 0  ? `<span class="r-tag t-med">🏥 Medical (+${bd.med})</span>` : ''}
+        ${bd.fin > 0  ? `<span class="r-tag t-fin">💰 Financial (+${bd.fin})</span>` : ''}
+        <span class="r-tag t-cgpa">🎓 CGPA ${s.cgpa.toFixed(1)} (+${bd.cgpa})</span>
+      </div>
+      <div class="r-score-row">
+        <div>
+          <div class="r-score-val">${s.priorityScore}</div>
+          <div class="r-score-lbl">Priority Score</div>
+        </div>
+      </div>
+    `;
+    grid.appendChild(div);
+  });
+
+  // Not allocated list
+  const allGroup = students.filter(s => s.gender.toLowerCase() === gender);
+  const allocIds = new Set(allocated.map(s => s.id));
+  const notAlloc = allGroup.filter(s => !allocIds.has(s.id));
+
+  const naDiv = document.getElementById(`${gender}-not-allocated`);
+  if (notAlloc.length) {
+    naDiv.innerHTML = `
+      <div class="not-alloc-head">Not Allocated (${notAlloc.length})</div>
+      <div class="not-alloc-pills">
+        ${notAlloc.map(s => `<span class="na-pill">${s.name} · ${s.priorityScore}pts</span>`).join('')}
+      </div>
+    `;
+  } else {
+    naDiv.innerHTML = '';
+  }
+
+  // hide blocks with no students
+  document.getElementById(`${gender}-result-block`).style.display =
+    allGroup.length ? 'block' : 'none';
+}
